@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1">
+
+    <title>
+        Scan Buku — Perpustakaan MAN 1 Majalengka
+    </title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #edf4ef;
+            color: #20352a;
+            font-family: Arial, sans-serif;
+        }
+
+        .card {
+            max-width: 650px;
+            margin: 0 auto;
+            background: #fff;
+            padding: 24px;
+            border-radius: 20px;
+            box-shadow: 0 8px 30px #0000000d;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin: 0 0 12px;
+            color: #17663b;
+        }
+
+        p {
+            font-size: 15px;
+            line-height: 1.7;
+        }
+
+        button {
+            border: 0;
+            border-radius: 12px;
+            padding: 14px 18px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            background: #176e40;
+            color: white;
+        }
+
+        button:disabled {
+            opacity: .5;
+            cursor: wait;
+        }
+
+        button.secondary {
+            background: #e7eee9;
+            color: #264a34;
+        }
+
+        button:focus-visible {
+            outline: 3px solid #f3b534;
+            outline-offset: 3px;
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 18px 0;
+        }
+
+        #reader {
+            width: 100%;
+            overflow: hidden;
+            border-radius: 12px;
+        }
+
+        #reader video {
+            max-width: 100%;
+        }
+
+        #pesan {
+            min-height: 26px;
+            color: #17663b;
+            overflow-wrap: anywhere;
+        }
+
+        .error {
+            color: #b42318 !important;
+        }
+
+        #hasil {
+            margin-top: 18px;
+            padding: 18px;
+            background: #eef7f1;
+            border-radius: 12px;
+        }
+
+        #kode {
+            font-size: 32px;
+            font-weight: bold;
+            overflow-wrap: anywhere;
+        }
+
+        .help {
+            color: #66776b;
+            font-size: 14px;
+        }
+
+        [hidden] {
+            display: none !important;
+        }
+
+        @media (max-width: 500px) {
+            body {
+                padding: 12px;
+            }
+
+            .card {
+                padding: 18px;
+            }
+
+            .actions button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<main class="card">
+
+    <h1>📷 Scan Barcode Buku</h1>
+
+    <p>
+        Arahkan kamera ke label barcode garis Code 128
+        pada buku. Barcode berisi InvID, bukan ISBN.
+    </p>
+
+    <div class="actions">
+
+        <button
+            id="btnMulai"
+            type="button">
+
+            Buka Kamera
+
+        </button>
+
+        <button
+            id="btnStop"
+            type="button"
+            class="secondary"
+            disabled>
+
+            Tutup Kamera
+
+        </button>
+
+    </div>
+
+    <div id="reader"></div>
+
+    <p
+        id="pesan"
+        role="status"
+        aria-live="polite">
+
+        Tekan Buka Kamera, lalu izinkan akses kamera.
+
+    </p>
+
+    <section id="hasil" hidden>
+
+        <p>InvID terbaca:</p>
+
+        <div id="kode"></div>
+
+        <p id="statusKirim"></p>
+
+        <div class="actions">
+
+            <button
+                id="btnSalin"
+                type="button"
+                class="secondary">
+
+                Salin InvID
+
+            </button>
+
+            <button
+                id="btnUlang"
+                type="button">
+
+                Scan Lagi
+
+            </button>
+
+        </div>
+
+    </section>
+
+    <p class="help">
+        Halaman ini hanya membaca barcode.
+        Pemilihan peminjam, penyimpanan transaksi,
+        dan konfirmasi pengembalian dilakukan
+        di aplikasi perpustakaan.
+    </p>
+
+</main>
+
+<script>
+
+/* =============================================================================
+   KONFIGURASI HUBUNGAN KE APPS SCRIPT
+============================================================================= */
+
+const $ = id => document.getElementById(id);
+
+const params = new URLSearchParams(location.search);
+
+const token = params.get('token') || '';
+const originParam = params.get('origin') || '';
+
+let targetOrigin = '';
+
+try {
+    const url = new URL(originParam);
+
+    const validHost =
+        url.hostname === 'script.google.com' ||
+        url.hostname === 'script.googleusercontent.com' ||
+        url.hostname.endsWith('.script.googleusercontent.com') ||
+        url.hostname.endsWith('-script.googleusercontent.com');
+
+    if (
+        url.protocol === 'https:' &&
+        validHost &&
+        !url.port &&
+        /^[A-Za-z0-9_-]{16,150}$/.test(token)
+    ) {
+        targetOrigin = url.origin;
+    }
+
+} catch (err) {
+    // Jika dibuka langsung, halaman berjalan sebagai mode uji.
+}
+
+
+/* =============================================================================
+   STATE DAN HELPER
+============================================================================= */
+
+let scanner = null;
+let starting = false;
+let stopping = false;
+let processing = false;
+
+let kodeTerakhir = '';
+let libraryPromise = null;
+let ackTimer = null;
+
+function pesan(text, error = false) {
+    $('pesan').textContent = text;
+
+    $('pesan').classList.toggle(
+        'error',
+        error
+    );
+}
+
+function buttons() {
+    $('btnMulai').disabled =
+        starting ||
+        stopping ||
+        !!scanner ||
+        processing;
+
+    $('btnStop').disabled =
+        !scanner ||
+        starting ||
+        stopping;
+
+    $('btnUlang').disabled =
+        starting ||
+        stopping ||
+        processing;
+}
+
+
+/* =============================================================================
+   MUAT PUSTAKA PEMINDAI
+============================================================================= */
+
+function muatPustaka() {
+    if (typeof Html5Qrcode !== 'undefined') {
+        return Promise.resolve();
+    }
+
+    if (libraryPromise) {
+        return libraryPromise;
+    }
+
+    libraryPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+
+        const fail = () => {
+            clearTimeout(timer);
+            script.remove();
+
+            reject(
+                new Error(
+                    'Pustaka pemindai gagal dimuat. ' +
+                    'Periksa koneksi dan coba lagi.'
+                )
+            );
+        };
+
+        const timer = setTimeout(fail, 20000);
+
+        script.src =
+            'https://cdn.jsdelivr.net/npm/' +
+            'html5-qrcode@2.3.8/html5-qrcode.min.js';
+
+        script.onload = () => {
+            clearTimeout(timer);
+
+            if (typeof Html5Qrcode !== 'undefined') {
+                resolve();
+            } else {
+                fail();
+            }
+        };
+
+        script.onerror = fail;
+
+        document.head.appendChild(script);
+
+    }).catch(err => {
+        libraryPromise = null;
+
+        throw err;
+    });
+
+    return libraryPromise;
+}
+
+
+/* =============================================================================
+   TUTUP KAMERA
+============================================================================= */
+
+async function stop() {
+    if (!scanner || stopping) {
+        return;
+    }
+
+    stopping = true;
+
+    buttons();
+
+    try {
+        await scanner.stop();
+
+        scanner.clear();
+        scanner = null;
+
+    } catch (err) {
+        pesan(
+            'Kamera belum berhasil ditutup. ' +
+            'Tekan Tutup Kamera kembali.',
+            true
+        );
+
+    } finally {
+        stopping = false;
+
+        buttons();
+    }
+}
+
+
+/* =============================================================================
+   BUKA KAMERA
+============================================================================= */
+
+async function start() {
+    if (
+        starting ||
+        stopping ||
+        scanner ||
+        processing
+    ) {
+        return;
+    }
+
+    clearTimeout(ackTimer);
+
+    kodeTerakhir = '';
+    $('hasil').hidden = true;
+
+    starting = true;
+
+    buttons();
+    pesan('Menyiapkan kamera…');
+
+    try {
+        await muatPustaka();
+
+        if (document.hidden) {
+            return;
+        }
+
+        const device = new Html5Qrcode(
+            'reader',
+            {
+                formatsToSupport: [
+                    Html5QrcodeSupportedFormats.CODE_128
+                ]
+            }
+        );
+
+        await device.start(
+            { facingMode: 'environment' },
+            { fps: 10 },
+
+            function(text) {
+                if (
+                    !starting &&
+                    !processing &&
+                    !stopping
+                ) {
+                    terbaca(text);
+                }
+            }
+        );
+
+        scanner = device;
+
+        if (document.hidden) {
+            await stop();
+
+        } else {
+            pesan(
+                'Kamera aktif. Arahkan ke barcode buku ' +
+                'hingga seluruh garis terlihat.'
+            );
+        }
+
+    } catch (err) {
+        const denied =
+            /NotAllowedError|Permission denied/i.test(
+                String(err)
+            );
+
+        pesan(
+            denied
+                ? 'Akses kamera ditolak. Izinkan kamera ' +
+                  'untuk situs GitHub Pages ini di ' +
+                  'pengaturan browser, lalu coba lagi.'
+                : 'Kamera belum dapat dibuka: ' +
+                  String(err),
+            true
+        );
+
+    } finally {
+        starting = false;
+
+        buttons();
+    }
+}
+
+
+/* =============================================================================
+   HASIL BARCODE
+============================================================================= */
+
+async function terbaca(text) {
+    const id = String(text).trim();
+
+    if (!/^[1-9]\d*$/.test(id)) {
+        pesan(
+            'Label terbaca, tetapi bukan InvID angka positif.',
+            true
+        );
+
+        return;
+    }
+
+    processing = true;
+
+    buttons();
+
+    try {
+        await stop();
+
+        kodeTerakhir = id;
+
+        $('kode').textContent = id;
+        $('hasil').hidden = false;
+
+        pesan('Barcode berhasil dibaca.');
+
+        /*
+         * Dibuka langsung dari alamat GitHub Pages:
+         * hasil ditampilkan untuk pengujian kamera.
+         */
+        if (
+            !targetOrigin ||
+            !window.opener
+        ) {
+            $('statusKirim').textContent =
+                'Mode uji: hasil ditampilkan di sini. ' +
+                'Hubungan ke aplikasi akan ditambahkan ' +
+                'pada langkah berikutnya.';
+
+            return;
+        }
+
+        /*
+         * Dibuka melalui aplikasi:
+         * kirim InvID ke halaman yang membuka pemindai.
+         */
+        $('statusKirim').textContent =
+            'Mengirim InvID ke aplikasi…';
+
+        ackTimer = setTimeout(function() {
+            $('statusKirim').textContent =
+                'Belum ada konfirmasi dari aplikasi. ' +
+                'Kamu bisa menyalin InvID dan ' +
+                'memasukkannya pada halaman transaksi.';
+        }, 6000);
+
+        try {
+            window.opener.postMessage(
+                {
+                    type: 'PERPUS_BARCODE_RESULT',
+                    token: token,
+                    invId: id
+                },
+                targetOrigin
+            );
+
+        } catch (err) {
+            clearTimeout(ackTimer);
+
+            $('statusKirim').textContent =
+                'Hasil belum dapat dikirim. ' +
+                'Gunakan Salin InvID lalu kembali ke aplikasi.';
+        }
+
+    } finally {
+        processing = false;
+
+        buttons();
+    }
+}
+
+
+/* =============================================================================
+   KONFIRMASI PENERIMAAN DARI APLIKASI
+============================================================================= */
+
+window.addEventListener('message', function(event) {
+    if (
+        !targetOrigin ||
+        event.origin !== targetOrigin ||
+        event.source !== window.opener
+    ) {
+        return;
+    }
+
+    const data = event.data;
+
+    if (
+        !data ||
+        data.type !== 'PERPUS_BARCODE_ACK' ||
+        data.token !== token ||
+        data.invId !== kodeTerakhir
+    ) {
+        return;
+    }
+
+    clearTimeout(ackTimer);
+
+    $('statusKirim').textContent =
+        'InvID sudah diterima aplikasi. ' +
+        'Kembali ke tab aplikasi untuk melihat ' +
+        'hasil pencarian dan melanjutkan transaksi.';
+});
+
+
+/* =============================================================================
+   TOMBOL
+============================================================================= */
+
+$('btnMulai').onclick = start;
+$('btnStop').onclick = stop;
+$('btnUlang').onclick = start;
+
+$('btnSalin').onclick = async function() {
+    try {
+        await navigator.clipboard.writeText(
+            kodeTerakhir
+        );
+
+        $('statusKirim').textContent =
+            'InvID disalin. Kembali ke aplikasi lalu ' +
+            'tempel pada kolom InvID.';
+
+    } catch (err) {
+        $('statusKirim').textContent =
+            'Salin angka InvID yang terlihat ' +
+            'di atas secara manual.';
+    }
+};
+
+document.addEventListener(
+    'visibilitychange',
+    function() {
+        if (document.hidden) {
+            stop();
+        }
+    }
+);
+
+</script>
+
+</body>
+</html>
