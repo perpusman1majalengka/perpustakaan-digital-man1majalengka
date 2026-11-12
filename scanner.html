@@ -594,10 +594,29 @@ window.addEventListener('message', function(event) {
 
     clearTimeout(ackTimer);
 
+$('statusKirim').textContent =
+    'InvID sudah diterima aplikasi. ' +
+    'Kembali ke halaman sebelumnya…';
+
+// Coba aktifkan kembali tab aplikasi.
+try {
+    if (window.opener && !window.opener.closed) {
+        window.opener.focus();
+    }
+} catch (err) {
+    // Browser tertentu membatasi perpindahan fokus.
+}
+
+// Tutup tab pemindai yang dibuka oleh aplikasi.
+window.close();
+
+// Jika browser menolak menutup tab, tampilkan petunjuk.
+setTimeout(function() {
     $('statusKirim').textContent =
         'InvID sudah diterima aplikasi. ' +
-        'Kembali ke tab aplikasi untuk melihat ' +
-        'hasil pencarian dan melanjutkan transaksi.';
+        'Jika tab ini belum tertutup, tutup tab pemindai ' +
+        'untuk kembali ke halaman transaksi atau pengembalian.';
+}, 500);
 });
 
 
